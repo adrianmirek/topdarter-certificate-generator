@@ -178,7 +178,7 @@ async function overlayText(
   const statsFontPx = statsLine ? fitFontSize(font, statsLine, usableWidth, statsFontIdeal) : 0;
 
   const nameLineH = Math.ceil(nameFontPx * 1.3);
-  const GAP = Math.max(6, Math.floor(height * 0.04));
+  const GAP = Math.max(10, Math.floor(height * 0.07));
   const statsLineH = statsLine ? Math.ceil(statsFontPx * 1.3) : 0;
   const totalH = nameLineH + (statsLine ? GAP + statsLineH : 0);
   const TOP_BIAS = Math.floor(height * 0.1);
