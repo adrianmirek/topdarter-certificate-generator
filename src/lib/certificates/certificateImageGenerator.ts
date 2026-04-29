@@ -13,6 +13,7 @@ function resolveFontFile(): string {
     join(__dirname, "../../fonts/Inter.ttf"),     // local dev / tsc source layout
     join(__dirname, "fonts/Inter.ttf"),           // alternative ncc output layout
   ];
+  
   for (const p of candidates) {
     if (existsSync(p)) {
       console.log("[font] resolved Inter.ttf →", p);
