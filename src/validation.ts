@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const certificateRequestSchema = z.object({
   display_name: z.string().trim().min(2).max(60),
+  font_url: z.string().url(),
   watermark_detection_image_url: z.string().url(),
   watermark_image_url: z.string().url(),
   stats: z

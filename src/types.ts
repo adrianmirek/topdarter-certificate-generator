@@ -8,6 +8,7 @@ export interface CertificateStatsInput {
 
 export interface CertificateAIPromptInput {
   display_name: string;
+  font_url: string;
   tournament_name?: string;
   tournament_date?: string;
   rank?: number;

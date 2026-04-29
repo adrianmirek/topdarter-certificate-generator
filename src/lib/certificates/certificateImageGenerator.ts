@@ -2,28 +2,24 @@ import type { CertificateAIPromptInput } from "../../types";
 import sharp from "sharp";
 import * as opentype from "opentype.js";
 
-const FONT_URL =
-  "https://evbnacawcuuoiolkrvdq.supabase.co/storage/v1/object/public/certificates/fonts/Inter_18pt-SemiBold.ttf";
+// Per-URL font cache — survives across warm Lambda invocations.
+const fontCache = new Map<string, Promise<opentype.Font>>();
 
-// Fetched once per Lambda container and cached. opentype.js is pure JS —
-// no fontconfig, no Pango, no system fonts. Text becomes SVG <path> data
-// which Sharp/librsvg renders on any platform without font support.
-let fontPromise: Promise<opentype.Font> | null = null;
-
-function getFont(): Promise<opentype.Font> {
-  if (!fontPromise) {
-    fontPromise = fetch(FONT_URL)
+function getFont(url: string): Promise<opentype.Font> {
+  if (!fontCache.has(url)) {
+    const promise = fetch(url)
       .then((r) => {
-        if (!r.ok) throw new Error(`Font fetch failed: ${r.status} ${FONT_URL}`);
+        if (!r.ok) throw new Error(`Font fetch failed: ${r.status} ${url}`);
         return r.arrayBuffer();
       })
       .then((buf) => {
         const font = opentype.parse(buf);
-        console.log("[font] loaded from Supabase:", font.names.fullName?.en ?? "Inter ExtraBold");
+        console.log("[font] loaded:", font.names.fullName?.en ?? url);
         return font;
       });
+    fontCache.set(url, promise);
   }
-  return fontPromise;
+  return fontCache.get(url)!;
 }
 
 interface Rect {
@@ -167,9 +163,10 @@ async function overlayText(
   baseBuf: Buffer,
   rect: Rect,
   displayName: string,
-  statsLine: string
+  statsLine: string,
+  fontUrl: string
 ): Promise<Buffer> {
-  const font = await getFont();
+  const font = await getFont(fontUrl);
   const { width, height } = rect;
   const usableWidth = Math.floor(width * 0.92);
 
@@ -229,7 +226,7 @@ export async function generateCertificateImage(input: CertificateAIPromptInput):
   if (input.stats.score_170_count) statParts.push(`170+: ${input.stats.score_170_count}`);
   const statsLine = statParts.join("  ");
 
-  const finalBuffer = await overlayText(templateBuffer, textRect, input.display_name, statsLine);
+  const finalBuffer = await overlayText(templateBuffer, textRect, input.display_name, statsLine, input.font_url);
   const slice = finalBuffer.buffer.slice(finalBuffer.byteOffset, finalBuffer.byteOffset + finalBuffer.byteLength);
   return slice as ArrayBuffer;
 }
