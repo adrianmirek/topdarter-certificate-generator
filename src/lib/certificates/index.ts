@@ -1,0 +1,1 @@
+export { generateCertificateImage } from "./certificateImageGenerator";
