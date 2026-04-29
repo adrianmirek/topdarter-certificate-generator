@@ -1,34 +1,30 @@
 import type { CertificateAIPromptInput } from "../../types";
 import sharp from "sharp";
-import { join } from "path";
-import { existsSync } from "fs";
-import { createCanvas, GlobalFonts } from "@napi-rs/canvas";
+import * as opentype from "opentype.js";
 
-// ncc (used by @vercel/node) collapses all modules into one file at the
-// bundle root, so __dirname becomes /var/task/ and relative paths like
-// "../../fonts" break.  Probe the two most likely locations.
-function resolveFontFile(): string {
-  const candidates = [
-    join(process.cwd(), "src/fonts/Inter.ttf"),  // Vercel Lambda (ncc, cwd=/var/task)
-    join(__dirname, "../../fonts/Inter.ttf"),     // local dev / tsc source layout
-    join(__dirname, "fonts/Inter.ttf"),           // alternative ncc output layout
-  ];
-  
-  for (const p of candidates) {
-    if (existsSync(p)) {
-      console.log("[font] resolved Inter.ttf →", p);
-      return p;
-    }
+const FONT_URL =
+  "https://evbnacawcuuoiolkrvdq.supabase.co/storage/v1/object/public/certificates/fonts/Inter_18pt-ExtraBold.ttf";
+
+// Fetched once per Lambda container and cached. opentype.js is pure JS —
+// no fontconfig, no Pango, no system fonts. Text becomes SVG <path> data
+// which Sharp/librsvg renders on any platform without font support.
+let fontPromise: Promise<opentype.Font> | null = null;
+
+function getFont(): Promise<opentype.Font> {
+  if (!fontPromise) {
+    fontPromise = fetch(FONT_URL)
+      .then((r) => {
+        if (!r.ok) throw new Error(`Font fetch failed: ${r.status} ${FONT_URL}`);
+        return r.arrayBuffer();
+      })
+      .then((buf) => {
+        const font = opentype.parse(buf);
+        console.log("[font] loaded from Supabase:", font.names.fullName?.en ?? "Inter ExtraBold");
+        return font;
+      });
   }
-  throw new Error(`Inter.ttf not found. Tried:\n${candidates.join("\n")}`);
+  return fontPromise;
 }
-
-const FONT_FILE = resolveFontFile();
-
-// Register once at cold-start.  @napi-rs/canvas uses Skia — no fontconfig,
-// no Pango, no system fonts required.  The second arg is the family alias
-// we will use in ctx.font, regardless of what name is embedded in the file.
-GlobalFonts.registerFromPath(FONT_FILE, "Inter");
 
 interface Rect {
   left: number;
@@ -141,38 +137,30 @@ async function detectTextRect(buffer: Buffer): Promise<Rect> {
   return rects.sort((a, b) => b.width * b.height - a.width * a.height)[0];
 }
 
-function fitFontSize(text: string, maxPx: number, idealSize: number): number {
-  const estimated = text.length * idealSize * 0.62;
-  if (estimated <= maxPx) return idealSize;
-  return Math.max(10, Math.floor(idealSize * (maxPx / estimated)));
+function fitFontSize(font: opentype.Font, text: string, maxPx: number, idealSize: number): number {
+  let size = idealSize;
+  while (size > 10 && font.getAdvanceWidth(text, size) > maxPx) {
+    size = Math.floor(size * 0.9);
+  }
+  return size;
 }
 
-function renderTextToPng(
+function textToSvg(
+  font: opentype.Font,
   text: string,
-  fontSizePx: number,
+  fontSize: number,
   color: string,
-  bold: boolean,
-  maxWidth: number
-): { png: Buffer; width: number; height: number } {
-  const fontDecl = `${bold ? "bold " : ""}${fontSizePx}px Inter`;
-  const lineHeight = Math.ceil(fontSizePx * 1.3);
-
-  // Measure actual rendered width on a scratch canvas
-  const scratch = createCanvas(1, 1);
-  const sctx = scratch.getContext("2d");
-  sctx.font = fontDecl;
-  const measured = Math.ceil(sctx.measureText(text).width);
-  const canvasW = Math.min(measured + 4, maxWidth);
-
-  const canvas = createCanvas(canvasW, lineHeight);
-  const ctx = canvas.getContext("2d");
-  ctx.font = fontDecl;
-  ctx.fillStyle = color;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(text, canvasW / 2, lineHeight / 2);
-
-  return { png: canvas.toBuffer("image/png"), width: canvasW, height: lineHeight };
+  width: number,
+  height: number
+): Buffer {
+  const baseline = Math.round(fontSize + (height - fontSize) / 2);
+  const textW = font.getAdvanceWidth(text, fontSize);
+  const x = Math.round((width - textW) / 2);
+  const path = font.getPath(text, x, baseline, fontSize);
+  path.fill = color;
+  path.stroke = null;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${path.toSVG(2)}</svg>`;
+  return Buffer.from(svg);
 }
 
 async function overlayText(
@@ -181,41 +169,37 @@ async function overlayText(
   displayName: string,
   statsLine: string
 ): Promise<Buffer> {
+  const font = await getFont();
   const { width, height } = rect;
   const usableWidth = Math.floor(width * 0.92);
 
   const NAME_REFERENCE = "Steyer Sebastian";
   const nameFontIdeal = Math.max(14, Math.floor(height * 0.5));
-  const nameFontPx = fitFontSize(NAME_REFERENCE, usableWidth, nameFontIdeal);
+  const nameFontPx = fitFontSize(font, NAME_REFERENCE, usableWidth, nameFontIdeal);
 
   const statsFontIdeal = Math.max(10, Math.floor(nameFontPx * 0.5));
-  const statsFontPx = statsLine ? fitFontSize(statsLine, usableWidth, statsFontIdeal) : 0;
+  const statsFontPx = statsLine ? fitFontSize(font, statsLine, usableWidth, statsFontIdeal) : 0;
 
-  const nameImg = renderTextToPng(displayName, nameFontPx, "#1a1a1a", true, usableWidth);
-
-  let statsImg: { png: Buffer; width: number; height: number } | null = null;
-  if (statsLine && statsFontPx > 0) {
-    statsImg = renderTextToPng(statsLine, statsFontPx, "#333333", false, usableWidth);
-  }
-
+  const nameLineH = Math.ceil(nameFontPx * 1.3);
   const GAP = Math.max(6, Math.floor(height * 0.04));
-  const totalH = nameImg.height + (statsImg ? GAP + statsImg.height : 0);
+  const statsLineH = statsLine ? Math.ceil(statsFontPx * 1.3) : 0;
+  const totalH = nameLineH + (statsLine ? GAP + statsLineH : 0);
   const TOP_BIAS = Math.floor(height * 0.1);
   const blockTop = Math.max(4, Math.floor((height - totalH) / 2) - TOP_BIAS);
 
   const composites: sharp.OverlayOptions[] = [
     {
-      input: nameImg.png,
-      left: rect.left + Math.floor((width - nameImg.width) / 2),
+      input: textToSvg(font, displayName, nameFontPx, "#1a1a1a", width, nameLineH),
+      left: rect.left,
       top: rect.top + blockTop,
     },
   ];
 
-  if (statsImg) {
+  if (statsLine && statsFontPx > 0) {
     composites.push({
-      input: statsImg.png,
-      left: rect.left + Math.floor((width - statsImg.width) / 2),
-      top: rect.top + blockTop + nameImg.height + GAP,
+      input: textToSvg(font, statsLine, statsFontPx, "#333333", width, statsLineH),
+      left: rect.left,
+      top: rect.top + blockTop + nameLineH + GAP,
     });
   }
 

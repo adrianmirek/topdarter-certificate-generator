@@ -4,10 +4,7 @@
   "builds": [
     {
       "src": "api/**/*.ts",
-      "use": "@vercel/node",
-      "config": {
-        "includeFiles": "src/fonts/**"
-      }
+      "use": "@vercel/node"
     }
   ]
 }
