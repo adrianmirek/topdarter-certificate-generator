@@ -7,6 +7,14 @@ export const config = {
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const secret = process.env.CERTIFICATE_RENDER_SECRET;
+  if (secret) {
+    const auth = req.headers["authorization"];
+    if (auth !== `Bearer ${secret}`) {
+      return res.status(401).json({ success: false, error: "Unauthorized" });
+    }
+  }
+
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return res.status(405).json({ success: false, error: "Method not allowed. Use POST." });
