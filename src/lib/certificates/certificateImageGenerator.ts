@@ -141,21 +141,29 @@ function fitFontSize(font: opentype.Font, text: string, maxPx: number, idealSize
   return size;
 }
 
+/** Returns ascent and descent in px using the font's actual OS/2 metrics. */
+function fontLineMetrics(font: opentype.Font, fontSize: number): { ascent: number; descent: number; lineHeight: number } {
+  const scale = fontSize / font.unitsPerEm;
+  const ascent  = Math.ceil(font.ascender  *  scale);
+  const descent = Math.ceil(Math.abs(font.descender) * scale);
+  return { ascent, descent, lineHeight: ascent + descent };
+}
+
 function textToSvg(
   font: opentype.Font,
   text: string,
   fontSize: number,
   color: string,
   width: number,
-  height: number
+  svgHeight: number,
+  baseline: number
 ): Buffer {
-  const baseline = Math.round(fontSize + (height - fontSize) / 2);
   const textW = font.getAdvanceWidth(text, fontSize);
   const x = Math.round((width - textW) / 2);
   const path = font.getPath(text, x, baseline, fontSize);
   path.fill = color;
   path.stroke = null;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${path.toSVG(2)}</svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${svgHeight}">${path.toSVG(2)}</svg>`;
   return Buffer.from(svg);
 }
 
@@ -177,24 +185,27 @@ async function overlayText(
   const statsFontIdeal = Math.max(10, Math.floor(nameFontPx * 0.55));
   const statsFontPx = statsLine ? fitFontSize(font, statsLine, usableWidth, statsFontIdeal) : 0;
 
-  const nameLineH = Math.ceil(nameFontPx * 1.3);
-  const GAP = Math.max(10, Math.floor(height * 0.07));
-  const statsLineH = statsLine ? Math.ceil(statsFontPx * 1.3) : 0;
-  const totalH = nameLineH + (statsLine ? GAP + statsLineH : 0);
-  const TOP_BIAS = Math.floor(height * 0.1);
-  const blockTop = Math.max(4, Math.floor((height - totalH) / 2) - TOP_BIAS);
+  const nameMet  = fontLineMetrics(font, nameFontPx);
+  const statsMet = statsLine ? fontLineMetrics(font, statsFontPx) : null;
+
+  const nameLineH  = nameMet.lineHeight;
+  const GAP        = Math.max(10, Math.floor(height * 0.05));
+  const statsLineH = statsMet ? statsMet.lineHeight : 0;
+  const totalH     = nameLineH + (statsMet ? GAP + statsLineH : 0);
+  const TOP_BIAS   = Math.floor(height * 0.1);
+  const blockTop   = Math.max(4, Math.floor((height - totalH) / 2) - TOP_BIAS);
 
   const composites: sharp.OverlayOptions[] = [
     {
-      input: textToSvg(font, displayName, nameFontPx, "#1a1a1a", width, nameLineH),
+      input: textToSvg(font, displayName, nameFontPx, "#1a1a1a", width, nameLineH, nameMet.ascent),
       left: rect.left,
       top: rect.top + blockTop,
     },
   ];
 
-  if (statsLine && statsFontPx > 0) {
+  if (statsLine && statsFontPx > 0 && statsMet) {
     composites.push({
-      input: textToSvg(font, statsLine, statsFontPx, "#333333", width, statsLineH),
+      input: textToSvg(font, statsLine, statsFontPx, "#333333", width, statsLineH, statsMet.ascent),
       left: rect.left,
       top: rect.top + blockTop + nameLineH + GAP,
     });
