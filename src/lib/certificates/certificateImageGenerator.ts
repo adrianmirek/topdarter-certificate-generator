@@ -1,8 +1,35 @@
 import type { CertificateAIPromptInput } from "../../types";
 import sharp from "sharp";
 import { join } from "path";
+import { mkdirSync, writeFileSync } from "fs";
 
 const FONT_FILE = join(__dirname, "../../fonts/Inter.ttf");
+const FONT_DIR = join(__dirname, "../../fonts");
+
+// Pango (used by libvips for text rendering) requires fontconfig even when
+// a fontfile is supplied. On Vercel Lambda there is no system fontconfig,
+// so we write a minimal config to /tmp at cold-start and point the env var
+// at it before any text render is attempted.
+(function setupFontconfig() {
+  if (process.env.FONTCONFIG_FILE) return;
+  try {
+    const cacheDir = "/tmp/fc-cache";
+    const configFile = "/tmp/fonts.conf";
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(
+      configFile,
+      `<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <dir>${FONT_DIR}</dir>
+  <cachedir>${cacheDir}</cachedir>
+</fontconfig>`
+    );
+    process.env.FONTCONFIG_FILE = configFile;
+  } catch (err) {
+    console.warn("[fontconfig] Could not write runtime config:", err);
+  }
+})();
 
 interface Rect {
   left: number;
