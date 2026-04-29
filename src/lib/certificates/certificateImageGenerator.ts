@@ -1,15 +1,15 @@
 import type { CertificateAIPromptInput } from "../../types";
 import sharp from "sharp";
 import { join } from "path";
-import { mkdirSync, writeFileSync, existsSync } from "fs";
+import { existsSync } from "fs";
+import { createCanvas, GlobalFonts } from "@napi-rs/canvas";
 
 // ncc (used by @vercel/node) collapses all modules into one file at the
 // bundle root, so __dirname becomes /var/task/ and relative paths like
-// "../../fonts" break.  Probe the two most likely locations and fall back
-// gracefully so local dev still works.
+// "../../fonts" break.  Probe the two most likely locations.
 function resolveFontFile(): string {
   const candidates = [
-    join(process.cwd(), "src/fonts/Inter.ttf"),  // Vercel Lambda (ncc bundle, cwd=/var/task)
+    join(process.cwd(), "src/fonts/Inter.ttf"),  // Vercel Lambda (ncc, cwd=/var/task)
     join(__dirname, "../../fonts/Inter.ttf"),     // local dev / tsc source layout
     join(__dirname, "fonts/Inter.ttf"),           // alternative ncc output layout
   ];
@@ -23,33 +23,11 @@ function resolveFontFile(): string {
 }
 
 const FONT_FILE = resolveFontFile();
-const FONT_DIR = join(FONT_FILE, "..");
 
-// Pango (used by libvips for text rendering) requires fontconfig even when
-// a fontfile is supplied. On Vercel Lambda there is no system fontconfig,
-// so we write a minimal config to /tmp at cold-start and point the env var
-// at it before any text render is attempted.
-(function setupFontconfig() {
-  if (process.env.FONTCONFIG_FILE) return;
-  try {
-    const cacheDir = "/tmp/fc-cache";
-    const configFile = "/tmp/fonts.conf";
-    mkdirSync(cacheDir, { recursive: true });
-    writeFileSync(
-      configFile,
-      `<?xml version="1.0"?>
-<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
-<fontconfig>
-  <dir>${FONT_DIR}</dir>
-  <cachedir>${cacheDir}</cachedir>
-</fontconfig>`
-    );
-    process.env.FONTCONFIG_FILE = configFile;
-    console.log("[fontconfig] config written, font dir:", FONT_DIR);
-  } catch (err) {
-    console.warn("[fontconfig] Could not write runtime config:", err);
-  }
-})();
+// Register once at cold-start.  @napi-rs/canvas uses Skia — no fontconfig,
+// no Pango, no system fonts required.  The second arg is the family alias
+// we will use in ctx.font, regardless of what name is embedded in the file.
+GlobalFonts.registerFromPath(FONT_FILE, "Inter");
 
 interface Rect {
   left: number;
@@ -162,46 +140,38 @@ async function detectTextRect(buffer: Buffer): Promise<Rect> {
   return rects.sort((a, b) => b.width * b.height - a.width * a.height)[0];
 }
 
-function escapePango(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
 function fitFontSize(text: string, maxPx: number, idealSize: number): number {
   const estimated = text.length * idealSize * 0.62;
   if (estimated <= maxPx) return idealSize;
   return Math.max(10, Math.floor(idealSize * (maxPx / estimated)));
 }
 
-async function renderTextImage(
+function renderTextToPng(
   text: string,
-  fontSizePt: number,
+  fontSizePx: number,
   color: string,
   bold: boolean,
   maxWidth: number
-): Promise<{ png: Buffer; width: number; height: number }> {
-  // Uses Sharp's native libvips Pango text renderer — loads font directly
-  // from a file path, so no fontconfig or system fonts are needed.
-  const markup = `<span foreground="${color}" font_family="Inter" font_weight="${bold ? "bold" : "normal"}" font_size="${fontSizePt}pt">${escapePango(text)}</span>`;
-  const { data, info } = await (
-    sharp({
-      text: {
-        text: markup,
-        fontfile: FONT_FILE,
-        rgba: true,
-        width: maxWidth,
-        align: "centre",
-        dpi: 72,
-      },
-    }) as sharp.Sharp
-  )
-    .png()
-    .toBuffer({ resolveWithObject: true });
-  return { png: data, width: info.width, height: info.height };
+): { png: Buffer; width: number; height: number } {
+  const fontDecl = `${bold ? "bold " : ""}${fontSizePx}px Inter`;
+  const lineHeight = Math.ceil(fontSizePx * 1.3);
+
+  // Measure actual rendered width on a scratch canvas
+  const scratch = createCanvas(1, 1);
+  const sctx = scratch.getContext("2d");
+  sctx.font = fontDecl;
+  const measured = Math.ceil(sctx.measureText(text).width);
+  const canvasW = Math.min(measured + 4, maxWidth);
+
+  const canvas = createCanvas(canvasW, lineHeight);
+  const ctx = canvas.getContext("2d");
+  ctx.font = fontDecl;
+  ctx.fillStyle = color;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, canvasW / 2, lineHeight / 2);
+
+  return { png: canvas.toBuffer("image/png"), width: canvasW, height: lineHeight };
 }
 
 async function overlayText(
@@ -215,16 +185,16 @@ async function overlayText(
 
   const NAME_REFERENCE = "Steyer Sebastian";
   const nameFontIdeal = Math.max(14, Math.floor(height * 0.5));
-  const nameFontPt = fitFontSize(NAME_REFERENCE, usableWidth, nameFontIdeal);
+  const nameFontPx = fitFontSize(NAME_REFERENCE, usableWidth, nameFontIdeal);
 
-  const statsFontIdeal = Math.max(10, Math.floor(nameFontPt * 0.5));
-  const statsFontPt = statsLine ? fitFontSize(statsLine, usableWidth, statsFontIdeal) : 0;
+  const statsFontIdeal = Math.max(10, Math.floor(nameFontPx * 0.5));
+  const statsFontPx = statsLine ? fitFontSize(statsLine, usableWidth, statsFontIdeal) : 0;
 
-  const nameImg = await renderTextImage(displayName, nameFontPt, "#1a1a1a", true, usableWidth);
+  const nameImg = renderTextToPng(displayName, nameFontPx, "#1a1a1a", true, usableWidth);
 
   let statsImg: { png: Buffer; width: number; height: number } | null = null;
-  if (statsLine && statsFontPt > 0) {
-    statsImg = await renderTextImage(statsLine, statsFontPt, "#333333", false, usableWidth);
+  if (statsLine && statsFontPx > 0) {
+    statsImg = renderTextToPng(statsLine, statsFontPx, "#333333", false, usableWidth);
   }
 
   const GAP = Math.max(6, Math.floor(height * 0.04));
