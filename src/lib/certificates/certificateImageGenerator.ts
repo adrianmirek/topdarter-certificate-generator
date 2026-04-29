@@ -1,14 +1,8 @@
 import type { CertificateAIPromptInput } from "../../types";
 import sharp from "sharp";
-import { readFileSync } from "fs";
 import { join } from "path";
 
-// Embedded at module load time so the font is available inside Vercel's
-// read-only serverless sandbox without any filesystem writes.
-const FONT_BASE64 = readFileSync(
-  join(__dirname, "../../fonts/Inter.ttf")
-).toString("base64");
-const FONT_FAMILY = "Inter";
+const FONT_FILE = join(__dirname, "../../fonts/Inter.ttf");
 
 interface Rect {
   left: number;
@@ -121,7 +115,7 @@ async function detectTextRect(buffer: Buffer): Promise<Rect> {
   return rects.sort((a, b) => b.width * b.height - a.width * a.height)[0];
 }
 
-function escapeXml(str: string): string {
+function escapePango(str: string): string {
   return str
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -136,46 +130,78 @@ function fitFontSize(text: string, maxPx: number, idealSize: number): number {
   return Math.max(10, Math.floor(idealSize * (maxPx / estimated)));
 }
 
+async function renderTextImage(
+  text: string,
+  fontSizePt: number,
+  color: string,
+  bold: boolean,
+  maxWidth: number
+): Promise<{ png: Buffer; width: number; height: number }> {
+  // Uses Sharp's native libvips Pango text renderer — loads font directly
+  // from a file path, so no fontconfig or system fonts are needed.
+  const markup = `<span foreground="${color}" font_family="Inter" font_weight="${bold ? "bold" : "normal"}" font_size="${fontSizePt}pt">${escapePango(text)}</span>`;
+  const { data, info } = await (
+    sharp({
+      text: {
+        text: markup,
+        fontfile: FONT_FILE,
+        rgba: true,
+        width: maxWidth,
+        align: "centre",
+        dpi: 72,
+      },
+    }) as sharp.Sharp
+  )
+    .png()
+    .toBuffer({ resolveWithObject: true });
+  return { png: data, width: info.width, height: info.height };
+}
+
 async function overlayText(
   baseBuf: Buffer,
-  originalRect: Rect,
+  rect: Rect,
   displayName: string,
   statsLine: string
 ): Promise<Buffer> {
-  const rect = originalRect;
   const { width, height } = rect;
   const usableWidth = Math.floor(width * 0.92);
-  const cx = Math.floor(width / 2);
 
   const NAME_REFERENCE = "Steyer Sebastian";
   const nameFontIdeal = Math.max(14, Math.floor(height * 0.5));
-  const nameFont = fitFontSize(NAME_REFERENCE, usableWidth, nameFontIdeal);
+  const nameFontPt = fitFontSize(NAME_REFERENCE, usableWidth, nameFontIdeal);
 
-  const statsFontIdeal = Math.max(10, Math.floor(nameFont * 0.5));
-  const statsFont = statsLine ? fitFontSize(statsLine, usableWidth, statsFontIdeal) : 0;
+  const statsFontIdeal = Math.max(10, Math.floor(nameFontPt * 0.5));
+  const statsFontPt = statsLine ? fitFontSize(statsLine, usableWidth, statsFontIdeal) : 0;
 
-  const nameLineH = Math.floor(nameFont * 1.15);
+  const nameImg = await renderTextImage(displayName, nameFontPt, "#1a1a1a", true, usableWidth);
+
+  let statsImg: { png: Buffer; width: number; height: number } | null = null;
+  if (statsLine && statsFontPt > 0) {
+    statsImg = await renderTextImage(statsLine, statsFontPt, "#333333", false, usableWidth);
+  }
+
   const GAP = Math.max(6, Math.floor(height * 0.04));
-  const statsLineH = statsLine ? Math.floor(statsFont * 1.15) : 0;
-  const totalH = nameLineH + (statsLine ? GAP + statsLineH : 0);
-
+  const totalH = nameImg.height + (statsImg ? GAP + statsImg.height : 0);
   const TOP_BIAS = Math.floor(height * 0.1);
   const blockTop = Math.max(4, Math.floor((height - totalH) / 2) - TOP_BIAS);
-  const nameY = blockTop + Math.floor(nameLineH / 2);
-  const statsY = statsLine ? blockTop + nameLineH + GAP + Math.floor(statsLineH / 2) : 0;
 
-  const statsEl = statsLine
-    ? `<text x="${cx}" y="${statsY}" text-anchor="middle" dominant-baseline="middle" font-family="${FONT_FAMILY}" font-size="${statsFont}" fill="#333333">${escapeXml(statsLine)}</text>`
-    : "";
+  const composites: sharp.OverlayOptions[] = [
+    {
+      input: nameImg.png,
+      left: rect.left + Math.floor((width - nameImg.width) / 2),
+      top: rect.top + blockTop,
+    },
+  ];
 
-  const fontFace = `@font-face { font-family: '${FONT_FAMILY}'; src: url('data:font/truetype;base64,${FONT_BASE64}') format('truetype'); }`;
+  if (statsImg) {
+    composites.push({
+      input: statsImg.png,
+      left: rect.left + Math.floor((width - statsImg.width) / 2),
+      top: rect.top + blockTop + nameImg.height + GAP,
+    });
+  }
 
-  const svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg" overflow="hidden"><defs><style>${fontFace}</style></defs><text x="${cx}" y="${nameY}" text-anchor="middle" dominant-baseline="middle" font-family="${FONT_FAMILY}" font-size="${nameFont}" font-weight="bold" fill="#1a1a1a">${escapeXml(displayName)}</text>${statsEl}</svg>`;
-
-  return sharp(baseBuf)
-    .composite([{ input: Buffer.from(svg), left: rect.left, top: rect.top }])
-    .webp()
-    .toBuffer();
+  return sharp(baseBuf).composite(composites).webp().toBuffer();
 }
 
 export async function generateCertificateImage(input: CertificateAIPromptInput): Promise<ArrayBuffer> {
