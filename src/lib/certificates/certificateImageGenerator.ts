@@ -174,7 +174,7 @@ async function overlayText(
   const usableWidth = Math.floor(width * 0.92);
 
   const NAME_REFERENCE = "Steyer Sebastian";
-  const nameFontIdeal = Math.max(14, Math.floor(height * 0.35));
+  const nameFontIdeal = Math.max(14, Math.floor(height * 0.25));
   const nameFontPx = fitFontSize(font, NAME_REFERENCE, usableWidth, nameFontIdeal);
 
   const statsFontIdeal = Math.max(10, Math.floor(nameFontPx * 0.55));
