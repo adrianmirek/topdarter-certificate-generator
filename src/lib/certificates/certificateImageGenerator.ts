@@ -1,5 +1,14 @@
 import type { CertificateAIPromptInput } from "../../types";
 import sharp from "sharp";
+import { readFileSync } from "fs";
+import { join } from "path";
+
+// Embedded at module load time so the font is available inside Vercel's
+// read-only serverless sandbox without any filesystem writes.
+const FONT_BASE64 = readFileSync(
+  join(__dirname, "../../fonts/Inter.ttf")
+).toString("base64");
+const FONT_FAMILY = "Inter";
 
 interface Rect {
   left: number;
@@ -156,10 +165,12 @@ async function overlayText(
   const statsY = statsLine ? blockTop + nameLineH + GAP + Math.floor(statsLineH / 2) : 0;
 
   const statsEl = statsLine
-    ? `<text x="${cx}" y="${statsY}" text-anchor="middle" dominant-baseline="middle" font-family="Arial, Helvetica, sans-serif" font-size="${statsFont}" fill="#333333">${escapeXml(statsLine)}</text>`
+    ? `<text x="${cx}" y="${statsY}" text-anchor="middle" dominant-baseline="middle" font-family="${FONT_FAMILY}" font-size="${statsFont}" fill="#333333">${escapeXml(statsLine)}</text>`
     : "";
 
-  const svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg" overflow="hidden"><text x="${cx}" y="${nameY}" text-anchor="middle" dominant-baseline="middle" font-family="Arial, Helvetica, sans-serif" font-size="${nameFont}" font-weight="bold" fill="#1a1a1a">${escapeXml(displayName)}</text>${statsEl}</svg>`;
+  const fontFace = `@font-face { font-family: '${FONT_FAMILY}'; src: url('data:font/truetype;base64,${FONT_BASE64}') format('truetype'); }`;
+
+  const svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg" overflow="hidden"><defs><style>${fontFace}</style></defs><text x="${cx}" y="${nameY}" text-anchor="middle" dominant-baseline="middle" font-family="${FONT_FAMILY}" font-size="${nameFont}" font-weight="bold" fill="#1a1a1a">${escapeXml(displayName)}</text>${statsEl}</svg>`;
 
   return sharp(baseBuf)
     .composite([{ input: Buffer.from(svg), left: rect.left, top: rect.top }])
