@@ -1,10 +1,29 @@
 import type { CertificateAIPromptInput } from "../../types";
 import sharp from "sharp";
 import { join } from "path";
-import { mkdirSync, writeFileSync } from "fs";
+import { mkdirSync, writeFileSync, existsSync } from "fs";
 
-const FONT_FILE = join(__dirname, "../../fonts/Inter.ttf");
-const FONT_DIR = join(__dirname, "../../fonts");
+// ncc (used by @vercel/node) collapses all modules into one file at the
+// bundle root, so __dirname becomes /var/task/ and relative paths like
+// "../../fonts" break.  Probe the two most likely locations and fall back
+// gracefully so local dev still works.
+function resolveFontFile(): string {
+  const candidates = [
+    join(process.cwd(), "src/fonts/Inter.ttf"),  // Vercel Lambda (ncc bundle, cwd=/var/task)
+    join(__dirname, "../../fonts/Inter.ttf"),     // local dev / tsc source layout
+    join(__dirname, "fonts/Inter.ttf"),           // alternative ncc output layout
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      console.log("[font] resolved Inter.ttf →", p);
+      return p;
+    }
+  }
+  throw new Error(`Inter.ttf not found. Tried:\n${candidates.join("\n")}`);
+}
+
+const FONT_FILE = resolveFontFile();
+const FONT_DIR = join(FONT_FILE, "..");
 
 // Pango (used by libvips for text rendering) requires fontconfig even when
 // a fontfile is supplied. On Vercel Lambda there is no system fontconfig,
@@ -26,6 +45,7 @@ const FONT_DIR = join(__dirname, "../../fonts");
 </fontconfig>`
     );
     process.env.FONTCONFIG_FILE = configFile;
+    console.log("[fontconfig] config written, font dir:", FONT_DIR);
   } catch (err) {
     console.warn("[fontconfig] Could not write runtime config:", err);
   }
