@@ -3,7 +3,7 @@ import sharp from "sharp";
 import * as opentype from "opentype.js";
 
 const FONT_URL =
-  "https://evbnacawcuuoiolkrvdq.supabase.co/storage/v1/object/public/certificates/fonts/Inter_18pt-ExtraBold.ttf";
+  "https://evbnacawcuuoiolkrvdq.supabase.co/storage/v1/object/public/certificates/fonts/Inter_18pt-SemiBold.ttf";
 
 // Fetched once per Lambda container and cached. opentype.js is pure JS —
 // no fontconfig, no Pango, no system fonts. Text becomes SVG <path> data
